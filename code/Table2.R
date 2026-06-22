@@ -1,0 +1,49 @@
+# Table 2 - Discrimination performance of plasma biomarkers and multi-marker
+# models for Intermediate/High vs Low ADNC.
+
+source("setup.R")
+
+db <- readRDS(file.path(data_dir, "demo_cohort.rds")) %>%
+  filter(!is.na(ad)) %>% add_adnc_binary()
+
+individual <- bind_rows(lapply(biomarker_vars, function(b)
+  cbind(Group = "Individual Biomarker", Name = unname(biomarker_labels[b]),
+        calc_roc_metrics(db, "ad_binary", b)))) %>%
+  arrange(desc(AUC))
+
+model_data <- db %>%
+  mutate(sex_numeric = as.numeric(factor(Sex)) - 1, apoe4_carrier = as.integer(apoe4 >= 1)) %>%
+  select(ad_binary, ptau217, ptau181, GFAP, NfL, NPDAGE, sex_numeric, apoe4_carrier) %>%
+  filter(complete.cases(.))
+
+models <- list(
+  "p-tau217 + NfL" = ad_binary ~ ptau217 + NfL,
+  "All 4 biomarkers" = ad_binary ~ ptau217 + ptau181 + GFAP + NfL,
+  "All 4 + Age + Sex" = ad_binary ~ ptau217 + ptau181 + GFAP + NfL + NPDAGE + sex_numeric,
+  "All 4 + Age + Sex + APOE4" = ad_binary ~ ptau217 + ptau181 + GFAP + NfL + NPDAGE + sex_numeric + apoe4_carrier)
+
+multi <- bind_rows(lapply(names(models), function(nm) {
+  fit <- glm(models[[nm]], data = model_data, family = binomial)
+  ro  <- roc(model_data$ad_binary, predict(fit, type = "response"), direction = "<", quiet = TRUE)
+  ci  <- ci.auc(ro, conf.level = 0.95)
+  yc  <- coords(ro, "best", best.method = "youden",
+                ret = c("threshold", "sensitivity", "specificity", "accuracy", "ppv", "npv"))
+  data.frame(Group = "Multi-Biomarker Model", Name = nm, N = nrow(model_data),
+             AUC = as.numeric(auc(ro)), AUC_Lower = ci[1], AUC_Upper = ci[3],
+             Cutoff = yc$threshold, Sensitivity = yc$sensitivity, Specificity = yc$specificity,
+             Accuracy = yc$accuracy, PPV = yc$ppv, NPV = yc$npv,
+             Youden = yc$sensitivity + yc$specificity - 1) }))
+
+table2 <- bind_rows(individual, multi) %>%
+  transmute(Group, `Biomarker / Model` = Name, N,
+            `AUC (95% CI)` = sprintf("%.3f (%.3f-%.3f)", AUC, AUC_Lower, AUC_Upper),
+            Cutoff = ifelse(Group == "Individual Biomarker",
+                            sprintf("%.2f pg/mL", Cutoff), sprintf("%.3f (prob)", Cutoff)),
+            Sensitivity = sprintf("%.1f%%", Sensitivity * 100),
+            Specificity = sprintf("%.1f%%", Specificity * 100),
+            Accuracy = sprintf("%.1f%%", Accuracy * 100),
+            PPV = sprintf("%.1f%%", PPV * 100), NPV = sprintf("%.1f%%", NPV * 100),
+            Youden = sprintf("%.3f", Youden))
+
+write_csv(table2, file.path(out_dir, "Table2.csv"))
+cat("Table 2 written to", out_dir, "\n")

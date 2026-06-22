@@ -1,0 +1,123 @@
+# Table 1 - Cohort characteristics by ADNC severity.
+
+source("setup.R")
+
+db <- readRDS(file.path(data_dir, "demo_cohort.rds")) %>% add_overall_group2()
+
+table1_data <- db %>%
+  filter(!is.na(ad)) %>%
+  mutate(
+    ad = factor(ad, levels = c("Low ADNC", "Int ADNC", "Sev ADNC")),
+    time_to_death_num = as.numeric(time_to_death),
+    APOE4_status = case_when(apoe4 >= 1 ~ "Carrier", apoe4 == 0 ~ "Non-carrier", TRUE ~ "Unknown"),
+    dx2 = factor(dx2, levels = c("Cognitively Normal", "MCI", "Dementia", "Excluded/Unknown")))
+
+table1_vars <- c(
+  "N", "Age at blood draw, years", "Age at death, years", "Blood draw–death interval, years",
+  "Female, n (%)", "Education, years", "APOE e4 carrier, n (%)", "MMSE score",
+  "  Cognitively Normal, n (%)", "  MCI, n (%)", "  Dementia, n (%)", "  Excluded/Unknown, n (%)",
+  "  0", "  I-II", "  III-IV", "  V-VI", "  None", "  Sparse", "  Moderate", "  Frequent",
+  "  Absent", "  Brainstem", "  Limbic", "  Neocortical",
+  "  Absent ", "  Amygdala", "  Limbic", "  Neocortical ",
+  "  FTLD-Tau, n (%)", "  FTLD-TDP, n (%)", "  FTLD-FUS, n (%)", "  ALS/MND, n (%)", "  Other pathology, n (%)",
+  "p-tau217, pg/mL", "p-tau181, pg/mL", "GFAP, pg/mL", "NfL, pg/mL")
+
+table1_gt_data <- tibble(Variable = table1_vars)
+
+for (grp in c("Low ADNC", "Int ADNC", "Sev ADNC")) {
+  g <- table1_data %>% filter(ad == grp)
+  n_grp <- nrow(g)
+  n_female <- sum(g$Sex == 2, na.rm = TRUE)
+  n_apoe <- sum(g$apoe4 >= 1, na.rm = TRUE)
+  n_cn <- sum(g$dx2 == "Cognitively Normal", na.rm = TRUE)
+  n_mci <- sum(g$dx2 == "MCI", na.rm = TRUE)
+  n_dem <- sum(g$dx2 == "Dementia", na.rm = TRUE)
+  n_excl <- sum(g$dx2 == "Excluded/Unknown" | is.na(g$dx2), na.rm = TRUE)
+  count_levels <- function(x, lv) { x <- factor(x[!is.na(x)], levels = lv); as.integer(table(x)) }
+  braak_n <- count_levels(g$Braak_grouped, c("0", "I-II", "III-IV", "V-VI")); braak_pct <- braak_n / sum(braak_n) * 100
+  cerad_n <- count_levels(g$NEUR, c("None", "Sparse", "Moderate", "Frequent")); cerad_pct <- cerad_n / sum(cerad_n) * 100
+  lbd_n  <- count_levels(g$lbd_stage, c("Absent", "Brainstem", "Limbic", "Neocortical")); lbd_pct <- lbd_n / sum(lbd_n) * 100
+  late_n <- count_levels(g$late_stage, c("Absent", "LATE Amygdala", "LATE Limbic", "LATE Neocortical")); late_pct <- late_n / sum(late_n) * 100
+  n_ftld_tau <- sum(g$ftld_tau == 1, na.rm = TRUE)
+  n_ftld_tdp <- sum(g$ftld_tdp == 1, na.rm = TRUE)
+  n_ftld_fus <- sum(g$flag_ftld_fus %in% 1 | g$flag_bibd %in% 1 | g$flag_nifid %in% 1)
+  n_als <- sum(g$flag_als %in% 1)
+  n_other <- sum(g$Other_present == TRUE, na.rm = TRUE)
+  ms <- function(x) sprintf("%.1f (%.1f)", mean(x, na.rm = TRUE), sd(x, na.rm = TRUE))
+  np <- function(n, d) sprintf("%d (%.1f%%)", n, n / d * 100)
+  miqr <- function(x, dp) sprintf(paste0("%.", dp, "f [%.", dp, "f]"), median(x, na.rm = TRUE), IQR(x, na.rm = TRUE))
+  table1_gt_data[[grp]] <- c(
+    as.character(n_grp), ms(g$AgeAtVisit), ms(g$NPDAGE), ms(g$time_to_death_num),
+    np(n_female, n_grp), ms(g$Educ), np(n_apoe, sum(!is.na(g$apoe4))), ms(g$MMSE),
+    np(n_cn, n_grp), np(n_mci, n_grp), np(n_dem, n_grp), np(n_excl, n_grp),
+    mapply(np, braak_n, sum(braak_n)), mapply(np, cerad_n, sum(cerad_n)),
+    mapply(np, lbd_n, sum(lbd_n)), mapply(np, late_n, sum(late_n)),
+    np(n_ftld_tau, n_grp), np(n_ftld_tdp, n_grp), np(n_ftld_fus, n_grp), np(n_als, n_grp), np(n_other, n_grp),
+    miqr(g$ptau217, 2), miqr(g$ptau181, 2), miqr(g$GFAP, 1), miqr(g$NfL, 1))
+}
+
+kw <- function(f) kruskal.test(f, data = table1_data)$p.value
+fish <- function(x) fisher.test(table(table1_data$ad, x), simulate.p.value = TRUE, B = 10000)$p.value
+safe_fish <- function(flag) {
+  flag <- ifelse(is.na(flag), 0L, as.integer(flag)); tbl <- table(table1_data$ad, flag)
+  if (nrow(tbl) < 2 || ncol(tbl) < 2) return(NA_real_)
+  fisher.test(tbl, simulate.p.value = TRUE, B = 10000)$p.value
+}
+ftld_fus_flag <- as.integer(table1_data$flag_ftld_fus %in% 1 | table1_data$flag_bibd %in% 1 | table1_data$flag_nifid %in% 1)
+als_flag <- as.integer(table1_data$flag_als %in% 1)
+p_omni <- list(
+  age_visit = kw(AgeAtVisit ~ ad), age_death = kw(NPDAGE ~ ad), time = kw(as.numeric(time_to_death) ~ ad),
+  sex = fisher.test(table(table1_data$ad, table1_data$Sex))$p.value, edu = kw(Educ ~ ad),
+  apoe = fisher.test(table(table1_data$ad, table1_data$APOE4_status))$p.value, mmse = kw(MMSE ~ ad),
+  dx = fish(table1_data$dx2), braak = fish(table1_data$Braak_grouped), cerad = fish(table1_data$NEUR),
+  lbd = fish(table1_data$lbd_stage), late = fish(table1_data$late_stage),
+  ftld_tau = fisher.test(table(table1_data$ad, table1_data$ftld_tau))$p.value,
+  ftld_tdp = fisher.test(table(table1_data$ad, table1_data$ftld_tdp))$p.value,
+  ftld_fus = safe_fish(ftld_fus_flag), als = safe_fish(als_flag),
+  other = fisher.test(table(table1_data$ad, table1_data$Other_present))$p.value,
+  ptau217 = kw(ptau217 ~ ad), ptau181 = kw(ptau181 ~ ad), gfap = kw(GFAP ~ ad), nfl = kw(NfL ~ ad))
+
+p_values <- c("", format_pvalue(p_omni$age_visit), format_pvalue(p_omni$age_death), format_pvalue(p_omni$time),
+  format_pvalue(p_omni$sex), format_pvalue(p_omni$edu), format_pvalue(p_omni$apoe), format_pvalue(p_omni$mmse),
+  format_pvalue(p_omni$dx), "", "", "", format_pvalue(p_omni$braak), "", "", "",
+  format_pvalue(p_omni$cerad), "", "", "", format_pvalue(p_omni$lbd), "", "", "",
+  format_pvalue(p_omni$late), "", "", "", format_pvalue(p_omni$ftld_tau), format_pvalue(p_omni$ftld_tdp),
+  format_pvalue(p_omni$ftld_fus), format_pvalue(p_omni$als), format_pvalue(p_omni$other),
+  format_pvalue(p_omni$ptau217), format_pvalue(p_omni$ptau181), format_pvalue(p_omni$gfap), format_pvalue(p_omni$nfl))
+
+# Post-hoc letters (BH-FDR p<0.05): a=Low-Int, b=Low-Sev, c=Int-Sev, shown only when omnibus is significant.
+sig_letters <- function(pl) paste(c("a", "b", "c")[!is.na(unlist(pl)) & unlist(pl) < 0.05], collapse = ", ")
+cld <- function(omni, pl) if (is.na(omni) || omni >= 0.05) "" else sig_letters(pl)
+dunn_p <- function(var) {
+  d <- dunn_test(table1_data, as.formula(paste(var, "~ ad")), p.adjust.method = "BH")
+  gp <- function(a, b) { r <- d[(d$group1 == a & d$group2 == b) | (d$group1 == b & d$group2 == a), ]; if (nrow(r)) r$p.adj[1] else NA_real_ }
+  list(gp("Low ADNC", "Int ADNC"), gp("Low ADNC", "Sev ADNC"), gp("Int ADNC", "Sev ADNC"))
+}
+fish_p <- function(d, cat_var) {
+  pairs <- list(c("Low ADNC", "Int ADNC"), c("Low ADNC", "Sev ADNC"), c("Int ADNC", "Sev ADNC"))
+  praw <- sapply(pairs, function(pr) {
+    s <- d[d$ad %in% pr, , drop = FALSE]; s$ad <- droplevels(factor(s$ad)); v <- factor(s[[cat_var]])
+    tbl <- table(s$ad, v); if (nrow(tbl) < 2 || ncol(tbl) < 2) return(NA_real_)
+    tryCatch(fisher.test(tbl, simulate.p.value = TRUE, B = 10000)$p.value, error = function(e) NA_real_) })
+  as.list(p.adjust(praw, method = "BH"))
+}
+td2 <- table1_data %>% mutate(ftld_fus_flag = ftld_fus_flag, als_flag = als_flag, time_num = as.numeric(time_to_death))
+posthoc <- c("", cld(p_omni$age_visit, dunn_p("AgeAtVisit")), cld(p_omni$age_death, dunn_p("NPDAGE")),
+  cld(p_omni$time, dunn_p("time_to_death_num")), cld(p_omni$sex, fish_p(table1_data, "Sex")),
+  cld(p_omni$edu, dunn_p("Educ")), cld(p_omni$apoe, fish_p(table1_data, "APOE4_status")),
+  cld(p_omni$mmse, dunn_p("MMSE")), cld(p_omni$dx, fish_p(filter(table1_data, !is.na(dx2)), "dx2")), "", "", "",
+  cld(p_omni$braak, fish_p(filter(table1_data, !is.na(Braak_grouped)), "Braak_grouped")), "", "", "",
+  cld(p_omni$cerad, fish_p(filter(table1_data, !is.na(NEUR)), "NEUR")), "", "", "",
+  cld(p_omni$lbd, fish_p(filter(table1_data, !is.na(lbd_stage)), "lbd_stage")), "", "", "",
+  cld(p_omni$late, fish_p(filter(table1_data, !is.na(late_stage)), "late_stage")), "", "", "",
+  cld(p_omni$ftld_tau, fish_p(table1_data, "ftld_tau")), cld(p_omni$ftld_tdp, fish_p(table1_data, "ftld_tdp")),
+  cld(p_omni$ftld_fus, fish_p(td2, "ftld_fus_flag")), cld(p_omni$als, fish_p(td2, "als_flag")),
+  cld(p_omni$other, fish_p(table1_data, "Other_present")),
+  cld(p_omni$ptau217, dunn_p("ptau217")), cld(p_omni$ptau181, dunn_p("ptau181")),
+  cld(p_omni$gfap, dunn_p("GFAP")), cld(p_omni$nfl, dunn_p("NfL")))
+
+table1_gt_data[["P-value"]] <- mapply(function(p, ph) if (ph == "" || p == "") p else paste0(p, "\n", ph),
+                                      p_values, posthoc, USE.NAMES = FALSE)
+
+write_csv(table1_gt_data, file.path(out_dir, "Table1.csv"))
+cat("Table 1 written to", out_dir, "\n")

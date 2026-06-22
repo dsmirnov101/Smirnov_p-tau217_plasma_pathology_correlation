@@ -1,123 +1,138 @@
-# Extended Data Figure 1 - Plasma biomarkers across pathology groupings.
-#   a  Biomarker concentrations across overall neuropathologic groupings (8 groups)
-#   b  p-tau by ADNC and Lewy body disease (2x2, excluding LATE/FTLD/Other)
-#   c  p-tau by ADNC and LATE (2x2, excluding LBD/FTLD/Other)
+# Extended Data Figure 2 - Plasma biomarkers across FTLD classes and subtypes.
+#   a  Biomarkers in ADNC w/o FTLD, FTLD-tau, FTLD-TDP, FTLD-FUS, Mixed FTLD (KW + Dunn FDR)
+#   b  GFAP/NfL ratio in pure FTLD-tau vs pure FTLD-TDP (Wilcoxon rank-sum)
+#   c  Biomarkers across specific FTLD subtypes + Low pathology + ADNC (exploratory)
 
 source("setup.R")
 
-db <- readRDS(file.path(data_dir, "demo_cohort.rds")) %>% add_overall_group2()
+db <- readRDS(file.path(data_dir, "demo_cohort.rds"))
 
-db <- db %>%
-  mutate(
-    ADNC_present  = ad %in% c("Int ADNC", "Sev ADNC"),
-    LBD_present   = lbd_stage %in% c("Limbic", "Neocortical"),
-    LATE_present  = late_stage %in% c("LATE Limbic", "LATE Neocortical"),
-    FTLD_present  = FTLD_present,
-    Other_present = Other_present,
-    LBD_group = case_when(
-      !ADNC_present & !LBD_present & !LATE_present & !FTLD_present & !Other_present ~ "Low Path",
-      !ADNC_present &  LBD_present & !LATE_present & !FTLD_present & !Other_present ~ "LBD",
-       ADNC_present & !LBD_present & !LATE_present & !FTLD_present & !Other_present ~ "ADNC",
-       ADNC_present &  LBD_present & !LATE_present & !FTLD_present & !Other_present ~ "ADNC + LBD",
-      TRUE ~ NA_character_),
-    LBD_group = factor(LBD_group, levels = c("Low Path", "LBD", "ADNC", "ADNC + LBD")),
-    LATE_group = case_when(
-      !ADNC_present & !LATE_present & !LBD_present & !FTLD_present & !Other_present ~ "Low Path",
-      !ADNC_present &  LATE_present & !LBD_present & !FTLD_present & !Other_present ~ "LATE",
-       ADNC_present & !LATE_present & !LBD_present & !FTLD_present & !Other_present ~ "ADNC",
-       ADNC_present &  LATE_present & !LBD_present & !FTLD_present & !Other_present ~ "ADNC + LATE",
-      TRUE ~ NA_character_),
-    LATE_group = factor(LATE_group, levels = c("Low Path", "LATE", "ADNC", "ADNC + LATE"))
-  )
-
-dunn_positions <- function(plot_data, dunn_results) {
-  plot_data %>%
-    group_by(biomarker) %>%
-    summarize(max_val = max(value, na.rm = TRUE), .groups = "drop") %>%
-    left_join(dunn_results, by = "biomarker") %>%
-    group_by(biomarker) %>%
-    mutate(bracket_level = row_number(),
-           y.position = max_val * (1.05 + (bracket_level - 1) * 0.12)) %>%
-    ungroup() %>%
-    filter(!is.na(p.adj))
+dunn_brackets <- function(d, group) {
+  groups_present <- d %>% group_by(biomarker) %>%
+    summarise(n_groups = n_distinct(.data[[group]]), .groups = "drop") %>%
+    filter(n_groups >= 2) %>% pull(biomarker)
+  if (length(groups_present) == 0) return(d[0, ] %>% mutate(group1 = character(), group2 = character(),
+                                                            p.adj = numeric(), p.adj.label = character(), y.position = numeric()))
+  dn <- d %>% filter(biomarker %in% groups_present) %>% group_by(biomarker) %>%
+    dunn_test(as.formula(paste("value ~", group)), p.adjust.method = "fdr") %>%
+    filter(p.adj < 0.05) %>% mutate(p.adj.label = get_stars(p.adj)) %>% ungroup()
+  d %>% group_by(biomarker) %>% summarise(max_val = max(value, na.rm = TRUE), .groups = "drop") %>%
+    left_join(dn, by = "biomarker") %>% group_by(biomarker) %>%
+    mutate(y.position = max_val * (1.05 + (row_number() - 1) * 0.12)) %>%
+    ungroup() %>% filter(!is.na(p.adj))
 }
 
-biomarker_box <- function(plot_data, color_vec, title_str, annotate = TRUE) {
-  kw <- plot_data %>%
-    group_by(biomarker) %>%
-    kruskal_test(value ~ grp) %>%
-    mutate(significant = p < 0.05)
-  sig_bio <- kw %>% filter(significant) %>% pull(biomarker)
+#Panel a: biomarkers by FTLD molecular class 
+db_a <- db %>%
+  mutate(ftld_class = case_when(
+    ftld_any == 1 & (ftld_tau + ftld_tdp + ftld_fus) > 1 ~ "Mixed FTLD",
+    ftld_tau == 1 ~ "FTLD-tau",
+    ftld_tdp == 1 ~ "FTLD-TDP",
+    ftld_fus == 1 ~ "FTLD-FUS",
+    ad %in% c("Int ADNC", "Sev ADNC") & !FTLD_present ~ "ADNC w/o FTLD",
+    TRUE ~ NA_character_),
+    ftld_class = factor(ftld_class,
+                        levels = c("ADNC w/o FTLD", "FTLD-tau", "FTLD-TDP", "FTLD-FUS", "Mixed FTLD")))
 
-  dunn_pos <- NULL
-  if (annotate && length(sig_bio) > 0) {
-    dunn_res <- plot_data %>%
-      filter(biomarker %in% sig_bio) %>%
-      group_by(biomarker) %>%
-      dunn_test(value ~ grp, p.adjust.method = "fdr") %>%
-      filter(p.adj < 0.05) %>%
-      mutate(p.adj.label = get_stars(p.adj)) %>%
-      ungroup()
-    if (nrow(dunn_res) > 0) dunn_pos <- dunn_positions(plot_data, dunn_res)
-  }
+colors_a <- c("ADNC w/o FTLD" = "#F08870", "FTLD-tau" = colors_ftld[["FTLD-tau"]],
+              "FTLD-TDP" = colors_ftld[["FTLD-TDP"]], "FTLD-FUS" = colors_ftld[["FTLD-FUS"]],
+              "Mixed FTLD" = "#A0522D")
 
-  p <- ggplot(plot_data, aes(x = grp, y = value, fill = grp)) +
-    geom_boxplot(outlier.shape = NA, alpha = 0.75, linewidth = 0.4, width = 0.7) +
-    geom_quasirandom(size = 0.5, shape = 21, color = "black", stroke = 0.2,
-                     alpha = 0.7, width = 0.2) +
-    scale_fill_manual(values = color_vec) +
-    facet_wrap(~ biomarker, nrow = 1, scales = "free_y") +
-    theme_manuscript(base_size = 9) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-          legend.position = "none",
-          panel.spacing = unit(0.3, "lines")) +
-    labs(x = NULL, y = "Concentration (pg/mL)", title = title_str)
+box_a <- db_a %>% filter(!is.na(ftld_class)) %>%
+  select(ID, ftld_class, all_of(biomarker_vars)) %>%
+  pivot_longer(all_of(biomarker_vars), names_to = "biomarker", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(biomarker = factor(biomarker, biomarker_vars, biomarker_labels),
+         ftld_class = droplevels(ftld_class))
 
-  if (!is.null(dunn_pos) && nrow(dunn_pos) > 0) {
-    p <- p + stat_pvalue_manual(dunn_pos, label = "p.adj.label",
-                                tip.length = 0.01, size = 2.5, bracket.size = 0.3,
-                                inherit.aes = FALSE)
-  }
-  p
+brackets_a <- dunn_brackets(box_a, "ftld_class")
+
+p_a <- ggplot(box_a) +
+  geom_boxplot(aes(ftld_class, value, fill = ftld_class), outlier.shape = NA, alpha = 0.75, linewidth = 0.4, width = 0.7) +
+  geom_quasirandom(aes(ftld_class, value), size = 0.5, shape = 21, color = "black", stroke = 0.2, alpha = 0.7, width = 0.2) +
+  scale_fill_manual(values = colors_a) +
+  facet_wrap(~ biomarker, nrow = 1, scales = "free_y") +
+  theme_manuscript(9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = NULL, y = "Concentration (pg/mL)", title = "Ext Data Fig 2a: Plasma biomarkers by FTLD class")
+if (nrow(brackets_a) > 0)
+  p_a <- p_a + stat_pvalue_manual(brackets_a, label = "p.adj.label", tip.length = 0.01, size = 2.5, bracket.size = 0.3)
+ggsave(file.path(out_dir, "ExtData2a_biomarkers_by_ftld_class.pdf"), p_a, width = 7, height = 3, dpi = 300)
+
+# Panel b: GFAP/NfL ratio, pure FTLD-tau vs pure FTLD-TDP
+db_b <- db %>%
+  filter(!is.na(GFAP), !is.na(NfL), NfL > 0) %>%
+  mutate(GFAP_NfL_ratio = GFAP / NfL,
+         ftld_molecular = case_when(
+           ftld_tau == 1 & ftld_tdp == 0 ~ "FTLD-tau",
+           ftld_tdp == 1 & ftld_tau == 0 ~ "FTLD-TDP",
+           TRUE ~ NA_character_),
+         ftld_molecular = factor(ftld_molecular, levels = c("FTLD-tau", "FTLD-TDP"))) %>%
+  filter(!is.na(ftld_molecular)) %>% mutate(ftld_molecular = droplevels(ftld_molecular))
+
+colors_b <- c("FTLD-tau" = colors_ftld[["FTLD-tau"]], "FTLD-TDP" = colors_ftld[["FTLD-TDP"]])
+
+p_b <- ggplot(db_b) +
+  geom_boxplot(aes(ftld_molecular, GFAP_NfL_ratio, fill = ftld_molecular), outlier.shape = NA, alpha = 0.75, linewidth = 0.4, width = 0.6) +
+  geom_quasirandom(aes(ftld_molecular, GFAP_NfL_ratio), size = 0.5, shape = 21, color = "black", stroke = 0.2, alpha = 0.7, width = 0.2) +
+  scale_fill_manual(values = colors_b) +
+  theme_manuscript(9) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  labs(x = NULL, y = "GFAP / NfL Ratio", title = "Ext Data Fig 2b:\nGFAP/NfL ratio by FTLD subtype")
+
+if (n_distinct(db_b$ftld_molecular) == 2 &&
+    all(table(db_b$ftld_molecular) >= 2)) {
+  wilcox_bracket <- db_b %>% wilcox_test(GFAP_NfL_ratio ~ ftld_molecular) %>%
+    mutate(p.label = get_stars(p),
+           y.position = max(db_b$GFAP_NfL_ratio, na.rm = TRUE) * 1.10,
+           p.adj.label = ifelse(p < 0.05, paste0("p = ", format_pvalue(p), " ", p.label),
+                                paste0("p = ", format_pvalue(p), " ns")))
+  p_b <- p_b + stat_pvalue_manual(wilcox_bracket, label = "p.adj.label",
+                                  tip.length = 0.02, size = 3, bracket.size = 0.4)
 }
+ggsave(file.path(out_dir, "ExtData2b_gfap_nfl_ratio.pdf"), p_b, width = 2.5, height = 3, dpi = 300)
 
-long_biomarkers <- function(data, group_var, markers) {
-  data %>%
-    filter(!is.na(.data[[group_var]])) %>%
-    dplyr::select(ID, grp = all_of(group_var), all_of(markers)) %>%
-    pivot_longer(cols = all_of(markers), names_to = "biomarker", values_to = "value") %>%
-    filter(!is.na(value)) %>%
-    mutate(biomarker = factor(biomarker, levels = markers,
-                              labels = unname(biomarker_labels[markers])))
-}
+# Panel c: specific FTLD subtypes 
+db_c <- db %>%
+  mutate(ftld_subtype_detail = case_when(
+    ftld_tau == 1 & ftld_tdp == 1 ~ "Mixed FTLD",
+    ftld_tau_specific == "PSP" ~ "PSP",
+    ftld_tau_specific == "CBD" ~ "CBD",
+    ftld_tau_specific == "Pick's Disease" ~ "Pick's Disease",
+    ftld_tau_specific == "AGD" ~ "AGD",
+    ftld_tau == 1 ~ "FTLD-tau NOS",
+    ftld_tdp == 1 ~ "FTLD-TDP",
+    ftld_fus == 1 ~ "FTLD-FUS",
+    Overall_Group == "Low Path" ~ "Low pathology",
+    Overall_Group %in% c("Int ADNC", "Sev ADNC") ~ "ADNC",
+    TRUE ~ NA_character_),
+    ftld_subtype_detail = factor(ftld_subtype_detail,
+                                 levels = c("Low pathology", "PSP", "CBD", "Pick's Disease", "AGD",
+                                            "FTLD-tau NOS", "FTLD-FUS", "FTLD-TDP", "Mixed FTLD", "ADNC")))
 
-# Panel a: all biomarkers across the overall pathology groups
-plot_a <- long_biomarkers(db, "Overall_Group", c("ptau217", "ptau181", "GFAP", "NfL"))
-p_a <- biomarker_box(plot_a, colors_overall_pathology,
-                     "Biomarkers by detailed pathology classification", annotate = FALSE)
-ggsave(file.path(out_dir, "ExtData1a_biomarkers_by_overall_group.pdf"),
-       p_a, width = 8, height = 2.8, dpi = 300)
+group_counts <- table(db_c$ftld_subtype_detail)
+sufficient_groups <- names(group_counts[group_counts >= 3])
 
-# Panel b: biomarkers by ADNC and LBD (2x2)
-plot_b <- long_biomarkers(db, "LBD_group", biomarker_vars)
-colors_lbd_group <- c("Low Path" = colors_lbd_copathology[["Low Path"]],
-                      "LBD" = colors_lbd_copathology[["LBD"]],
-                      "ADNC" = colors_lbd_copathology[["ADNC"]],
-                      "ADNC + LBD" = colors_lbd_copathology[["ADNC + LBD"]])
-p_b <- biomarker_box(plot_b, colors_lbd_group,
-                     "Biomarkers by ADNC and Lewy body disease")
-ggsave(file.path(out_dir, "ExtData1b_biomarkers_by_lbd.pdf"),
-       p_b, width = 7, height = 3, dpi = 300)
+colors_c <- c("Low pathology" = "#E8E8E8", "PSP" = colors_tauopathy[["PSP"]], "CBD" = colors_tauopathy[["CBD"]],
+              "Pick's Disease" = colors_tauopathy[["Pick's Disease"]], "AGD" = colors_tauopathy[["AGD"]],
+              "FTLD-tau NOS" = colors_tauopathy[["Other Tauopathy"]], "FTLD-FUS" = colors_ftld[["FTLD-FUS"]],
+              "FTLD-TDP" = colors_ftld[["FTLD-TDP"]], "Mixed FTLD" = "#A0522D", "ADNC" = "#F08870")
 
-# Panel c: biomarkers by ADNC and LATE (2x2)
-plot_c <- long_biomarkers(db, "LATE_group", biomarker_vars)
-colors_late_group <- c("Low Path" = colors_late_copathology[["Low Path"]],
-                       "LATE" = colors_late_copathology[["LATE"]],
-                       "ADNC" = colors_late_copathology[["ADNC"]],
-                       "ADNC + LATE" = colors_late_copathology[["ADNC + LATE"]])
-p_c <- biomarker_box(plot_c, colors_late_group,
-                     "Biomarkers by ADNC and LATE")
-ggsave(file.path(out_dir, "ExtData1c_biomarkers_by_late.pdf"),
-       p_c, width = 7, height = 3, dpi = 300)
+box_c <- db_c %>% filter(ftld_subtype_detail %in% sufficient_groups) %>%
+  select(ID, ftld_subtype_detail, all_of(biomarker_vars)) %>%
+  pivot_longer(all_of(biomarker_vars), names_to = "biomarker", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(biomarker = factor(biomarker, biomarker_vars, biomarker_labels),
+         ftld_subtype_detail = droplevels(ftld_subtype_detail))
 
-cat("Extended Data Figure 1 panels written to", out_dir, "\n")
+p_c <- ggplot(box_c) +
+  geom_boxplot(aes(ftld_subtype_detail, value, fill = ftld_subtype_detail), outlier.shape = NA, alpha = 0.75, linewidth = 0.4, width = 0.7) +
+  geom_quasirandom(aes(ftld_subtype_detail, value), size = 0.5, shape = 21, color = "black", stroke = 0.2, alpha = 0.7, width = 0.2) +
+  scale_fill_manual(values = colors_c) +
+  facet_wrap(~ biomarker, nrow = 1, scales = "free_y") +
+  theme_manuscript(9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = NULL, y = "Concentration (pg/mL)", title = "Ext Data Fig 2c: Plasma biomarkers by FTLD subtype")
+ggsave(file.path(out_dir, "ExtData2c_biomarkers_by_subtype.pdf"), p_c, width = 9, height = 3, dpi = 300)
+
+cat("Extended Data Figure 2 panels written to", out_dir, "\n")
